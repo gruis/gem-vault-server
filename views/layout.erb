@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>GemVau.lt</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/bootstrap/css/bootstrap.css" rel="stylesheet">
+    <link href="/bootstrap/css/bootstrap-responsive.css" rel="stylesheet">
+    <link href="/css/main.css" rel="stylesheet">
+  </head>
+
+  <body>
+
+    <div class="container-narrow">
+      <div class="masthead">
+        <ul class="nav nav-pills pull-right">
+          <% if !authenticated? %>
+            <li class="active"><a href="/login">Log In</a></li>
+          <% else %>
+            <li><a href="/protected">Protected</a></li>
+            <li><a href="/logout">Log Out</a></li>
+          <% end %>
+        </ul>
+        <h3 class="muted"><a href="/">GemVau.lt</a></h3>
+      </div>
+
+      <% [:success, :error].each do |type| %>
+        <% if flash.send(type) %>
+          <div class="alert alert-block alert-<%= type %>">
+            <button type="button" class="close" data-dismiss="alert">&times;</button>
+            <%= flash.send(type) %>
+          </div>
+        <% end %>
+      <% end %>
+
+    <%= yield %>
+    </div> <!-- /container -->
+
+    <script src="http://code.jquery.com/jquery.js"></script>
+    <script src="/bootstrap/js/bootstrap.min.js"></script>    
+  </body>
+</html>

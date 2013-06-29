@@ -18,10 +18,10 @@ require "rubygems"
   # If you have C extensions, uncomment this line
   # s.extensions = "ext/extconf.rb"
   s.add_dependency 'builder'
-  s.add_dependency 'sinatra'
-  s.add_dependency 'leveldb-ruby'
-  s.add_dependency 'sqlite3'
-  s.add_dependency 'redis'
-  s.add_dependency 'kyotocabinet-ruby'
-  s.add_dependency 'oj'
+  s.add_dependency 'thin'
+  s.add_dependency 'sinatra', "~>1.4.3"
+  s.add_dependency 'sinatra-contrib'
+  s.add_dependency 'rack-flash3'
+  s.add_dependency 'warden'
+  s.add_dependency 'bcrypt-ruby'
 end

@@ -1,28 +1,27 @@
-require "gem-vault/model"
+require "nos-record"
 require "securerandom"
 
 module GemVault
   module Server
     class ApiKey
-      include Model
+      include NosRecord::Model
+      include NosRecord::Model::MemoizeForeignAttr
 
       attr_reader :id
       alias :key :id
 
       attr_reader :created_on
+      attr_reader :user_id
 
       def initialize(user)
         @created_on   = Time.new
-        @key          = SecureRandom.hex
+        @id           = SecureRandom.hex
         @user         = user
         @user_id      = user.id
       end
 
       def user
-        return @user if @user
-        return nil unless @user_id
-        raise "Connection required" unless @_connection
-        @_connection.get(@user_id)
+        memoize(:user, User)
       end
 
       def user=(u)

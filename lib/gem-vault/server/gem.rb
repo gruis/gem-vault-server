@@ -1,5 +1,6 @@
 require "stringio"
 require "gem-vault/server"
+require "rubygems/package"
 
 module GemVault
   module Server
@@ -59,24 +60,50 @@ module GemVault
       end # class << self
 
 
+      attr_accessor :bug_tracker
+      attr_accessor :wiki
+      attr_accessor :documentation
+      attr_accessor :mailing_list
+      attr_accessor :source_code
+
       def initialize(path)
         @path = path
       end
 
-      def name
-        @name ||= spec.name
+      [:name,
+       :version,
+       :authors,
+       :description,
+       :project_uri,
+       :homepage,
+       :platform
+      ].each do |key|
+        define_method(key) do
+          iv = :"@#{key}"
+          return instance_variable_get(iv) if instance_variable_defined?(iv)
+          instance_variable_set(iv, spec.send(key))
+        end
       end
 
-      def version
-        @version ||= spec.version
+      def dependencies
+        runtime = []
+        devel   = []
+        spec.dependencies
+          .sort{|a,b| a.name.to_s <=> b.name.to_s }
+          .each do |d|
+          (d.type == :runtime ? runtime : devel)
+            .push({'name' => d.name.to_s, 'requirements' => d.requirement.to_s })
+        end
+        {'development' => devel, 'runtime' => runtime}
       end
 
       def spec
         @spec ||=  open { |pkg| pkg.metadata }
 
-      rescue Psych::WhitelistException => e
-        # "Attempted YAML metadata exploit: #{e}"
-        raise StandardError, "RubyGems.org cannot process this gem.\nThe metadata is invalid.\n#{e}"
+      # https://github.com/rubygems/rubygems.org/blob/15b6dd6d5f/config/initializers/forbidden_yaml.rb
+      # rescue Psych::WhitelistException => e
+      #   # "Attempted YAML metadata exploit: #{e}"
+      #   raise StandardError, "RubyGems.org cannot process this gem.\nThe metadata is invalid.\n#{e}"
       rescue Gem::Package::FormatError
         raise StandardError, "RubyGems.org cannot process this gem.\nPlease try rebuilding it" +
                " and installing it locally to make sure it's valid."
