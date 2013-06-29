@@ -60,12 +60,6 @@ module GemVault
       end # class << self
 
 
-      attr_accessor :bug_tracker
-      attr_accessor :wiki
-      attr_accessor :documentation
-      attr_accessor :mailing_list
-      attr_accessor :source_code
-
       def initialize(path)
         @path = path
       end
@@ -74,6 +68,7 @@ module GemVault
        :version,
        :authors,
        :description,
+       :summary,
        :project_uri,
        :homepage,
        :platform

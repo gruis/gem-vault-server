@@ -8,7 +8,7 @@ require "json"
 
 require "gem-vault/server"
 require "gem-vault/server/user"
-require "gem-vault/server/gem"
+require "gem-vault/server/gem-meta"
 require "gem-vault/ext/oj"
 
 module GemVault
@@ -41,7 +41,6 @@ module GemVault
 
       Warden::Strategies.add(:apikey) do
         def valid?
-          $stderr.puts "checking for api key"
           env['HTTP_AUTHORIZATION']
         end
 
@@ -95,7 +94,6 @@ module GemVault
       end
 
       def authenticate!
-        $stderr.puts "authentication failed for: #{attempted_path}"
         session[:return_to] = attempted_path
         flash.error = warden.message || "Login required"
         redirect '/login'
@@ -107,6 +105,14 @@ module GemVault
 
       def json?(ext = nil)
         request.accept?('json') || (ext && ext == "json")
+      end
+
+      def gem_by_name(name)
+        meta = GemMeta.get(name)
+        return meta if meta
+        gem = Server::Gem.each(name).sort{|b,a| a.version <=> b.version}.first
+        return unless gem
+        GemMeta.new(:name => name, :version => gem.version.version)
       end
 
       get '/login' do
@@ -146,32 +152,26 @@ module GemVault
 
       get '/api/v1/gems/:name.:ext' do |name, ext|
         must_auth
-        gem = Server::Gem.each(name).sort(&:version).first
-        data = {
-          'name'              => gem.name,
-          'downloads'         => 0,
-          'version'           => gem.version.version,
-          'version_downloads' => 0,
-          'platform'          => gem.platform,
-          'authors'           => gem.authors.join(", "),
-          'info'              => gem.description,
-          'project_uri'       => uri("/gems/#{gem.name}"),
-          'gem_uri'           => url("/gems/#{gem.name}-#{gem.version}.gem"),
-        }
+        return 404 unless gem = gem_by_name(name)
+        gem.save if gem.new?
+        meta = gem.to_hash
+        ['project_uri', 'gem_uri'].each do |key|
+          meta[key] = uri(meta[key])
+        end
+        return json(meta) if json?(ext)
+        meta
+      end
 
-        [:homepage,
-         :wiki,
-         :documentation,
-         :mailing_list,
-         :source_code,
-         :bug_tracker
-        ].each do |key|
-           data["#{key}_uri"] = gem.send(key)
-          end
-        data['dependencies'] = gem.dependencies
-
-        return json(data) if json?(ext)
-        gems.inspect
+      get '/api/v1/search.:ext' do |ext|
+        must_auth
+        # TODO retain an index
+        results = GemMeta.select do |g|
+          g.name.start_with?(params[:query]) ||
+            g.gem.summary.include?(params[:query]) ||
+            g.gem.description.include?(params[:query])
+        end.map(&:to_hash)
+        return json(results) if json?(ext)
+        results
       end
 
     end # class::Http < Sinatra::Base
