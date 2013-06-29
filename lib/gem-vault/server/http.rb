@@ -30,7 +30,7 @@ module GemVault
         config.serialize_into_session{|user| user.id }
         config.serialize_from_session{|id| User.get(id) }
         config.scope_defaults :default,
-          strategies: [:apikey],
+          strategies: [:apikey, :password, :basic],
           action: 'unauthenticated'
         config.failure_app = self
       end
@@ -41,14 +41,14 @@ module GemVault
 
       Warden::Strategies.add(:apikey) do
         def valid?
-          env['HTTP_AUTHORIZATION']
+          env['HTTP_AUTHORIZATION'] && !env['HTTP_AUTHORIZATION'].start_with?("Basic ")
         end
 
         def authenticate!
           apikey = ApiKey.get(env['HTTP_AUTHORIZATION'])
           apikey ? success!(apikey.user) : fail!
         end
-      end
+      end # Warden::Strategies.add(:apikey)
 
       Warden::Strategies.add(:password) do
         def flash
@@ -71,6 +71,38 @@ module GemVault
           end
         end
       end # Warden::Strategies.add(:password)
+
+      Warden::Strategies.add(:basic) do
+        def auth
+          @auth ||= Rack::Auth::Basic::Request.new(env)
+        end
+
+        def valid?
+          auth.provided? && auth.basic? && auth.credentials
+        end
+
+        def authenticate!
+          user = User.get(auth.credentials.first)
+          user && user.authenticate(auth.credentials.last) ?
+            success!(user)  : custom!(unauthorized)
+        end
+
+        def store?
+          false
+        end
+
+        def unauthorized
+          [
+            401,
+            {
+              'Content-Type' => 'text/plain',
+              'Content-Length' => '0',
+              'WWW-Authenticate' => %(Basic realm="realm")
+            },
+            []
+            ]
+        end
+      end # Warden::Strategies.add(:basic)
 
 
       def warden
@@ -107,12 +139,18 @@ module GemVault
         request.accept?('json') || (ext && ext == "json")
       end
 
-      def gem_by_name(name)
-        meta = GemMeta.get(name)
-        return meta if meta
-        gem = Server::Gem.each(name).sort{|b,a| a.version <=> b.version}.first
-        return unless gem
-        GemMeta.new(:name => name, :version => gem.version.version)
+      def gems_by_keyword(query)
+        GemMeta.select do |g|
+          g.name.start_with?(params[:query]) ||
+            g.gem.summary.include?(params[:query]) ||
+            g.gem.description.include?(params[:query])
+        end
+      end
+
+      def gems_by_owner(owner)
+        GemMeta.select do |g|
+          g.owners.include?(owner)
+        end
       end
 
       get '/login' do
@@ -152,7 +190,7 @@ module GemVault
 
       get '/api/v1/gems/:name.:ext' do |name, ext|
         must_auth
-        return 404 unless gem = gem_by_name(name)
+        return 404 unless gem = GemMeta.by_name(name)
         gem.save if gem.new?
         meta = gem.to_hash
         ['project_uri', 'gem_uri'].each do |key|
@@ -165,13 +203,72 @@ module GemVault
       get '/api/v1/search.:ext' do |ext|
         must_auth
         # TODO retain an index
-        results = GemMeta.select do |g|
-          g.name.start_with?(params[:query]) ||
-            g.gem.summary.include?(params[:query]) ||
-            g.gem.description.include?(params[:query])
-        end.map(&:to_hash)
+        results = gems_by_keyword(params[:query]).map(&:to_hash)
         return json(results) if json?(ext)
         results
+      end
+
+      # List all gems that you own.
+      get '/api/v1/gems.:ext' do |ext|
+        must_auth
+        results = gems_by_owner(user).map(&:to_hash)
+        return json(results) if json?(ext)
+        results
+      end
+
+      # View all owners of a gem. These users can all push to this gem.
+      get '/api/v1/gems/:name/owners.:ext' do |name, ext|
+        must_auth
+        gem    = GemMeta.by_name(name)
+        owners = Hash[gem.owners.map {|e| ['email', e.email]}]
+        return json(owners) if json?(ext)
+        owners
+      end
+
+      # View all gems for a user. This is all the gems a user can push to.
+      get  '/api/v1/owners/:name/gems.:ext' do |name, ext|
+        must_auth
+        return 404 unless u = User.get(name)
+        results = u.gems.map(&:to_hash)
+        return json(results) if json?(ext)
+        results
+      end
+
+      # Add an owner to a RubyGem you own, giving that user permission to
+      # manage it.
+      post '/api/v1/gems/:name/owners' do |name|
+        must_auth
+        return 404 unless gem = GemMeta.by_name(name)
+        return 401 unless user.own?(gem)
+        # TODO verify that params[:email] is not nil
+        return 404 unless owner = User.get(:email => params[:email])
+        gem.add_owner(owner)
+        gem.save
+        return json(:status => :ok) if json?(ext)
+        "Owner added successfully."
+      end
+
+      # Remove a user’s permission to manage a RubyGem you own.
+      delete '/api/v1/gems/:name/owners' do |name|
+        must_auth
+        return 404 unless gem = GemMeta.by_name(name)
+        return 401 unless user.own?(gem)
+        # TODO verify that params[:email] is not nil
+        return 404 unless owner = User.get(:email => params[:email])
+        gem.del_owner(owner)
+        gem.save
+        return json(:status => :ok) if json?(ext)
+        "Owner removed successfully."
+      end
+
+      # Retrieve your API key using HTTP basic auth.
+      get  '/api/v1/api_key.:ext' do |ext|
+        must_auth
+        data = {
+          'gemvault_api_key' => (user.api_key || user.gen_api_key.api_key).key
+        }
+        return json(data) if json?(ext)
+        data
       end
 
     end # class::Http < Sinatra::Base

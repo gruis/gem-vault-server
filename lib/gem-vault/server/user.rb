@@ -43,6 +43,30 @@ module GemVault
         self
       end
 
+      def gem_ids
+        @gem_ids ||= GemMeta.select {|g| g.owner_ids.include?(id) }.map(&:id)
+      end
+
+      def gems
+        @gems ||= gem_ids.map{|g| GemMeta.get(g) }
+      end
+
+      def add_gem(gem)
+        gem_ids << gem.id
+        gems << gem
+        self
+      end
+
+      def del_gem(gem)
+        gem_ids.delete(gem.id)
+        gems.delete_if { |g| g.id == gem.id }
+        self
+      end
+
+      def own?(gem)
+        gem.own?(self)
+      end
+
       private
 
       def never_serialize

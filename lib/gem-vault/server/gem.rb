@@ -69,6 +69,7 @@ module GemVault
        :authors,
        :description,
        :summary,
+       :email,
        :project_uri,
        :homepage,
        :platform
