@@ -7,6 +7,7 @@ module GemVault
       include NosRecord::Model
       include NosRecord::Model::EasyAttrs
       include NosRecord::Model::MemoizeForeignAttr
+      include NosRecord::Model::HideIdAttrs
 
       attr_accessor :uid
       alias :id :uid
@@ -18,6 +19,20 @@ module GemVault
       def initialize(attrs = {})
         super
         @created_on = Time.new
+      end
+
+      def to_hash
+        super.tap do |h|
+          h['admin'] = admin?
+        end
+      end
+
+      def admin?
+        !!@admin
+      end
+
+      def admin=(v)
+        @admin = !!v
       end
 
       def password=(pass)
@@ -36,6 +51,13 @@ module GemVault
         memoize(:api_key, ApiKey)
       end
 
+      def del_api_key
+        return unless api_key
+        api_key.delete
+        @api_key_id = nil
+        self
+      end
+
       def gen_api_key
         api_key.delete if api_key
         @api_key    = ApiKey.new(self).save
@@ -51,9 +73,9 @@ module GemVault
         @gems ||= gem_ids.map{|g| GemMeta.get(g) }
       end
 
-      def add_gem(gem)
-        gem_ids << gem.id
-        gems << gem
+      def add_gem(meta)
+        gem_ids << meta.id unless gem_ids.include?(meta.id)
+        gems << meta unless gems.map(&:id).include?(meta.id)
         self
       end
 
@@ -70,7 +92,7 @@ module GemVault
       private
 
       def never_serialize
-        super | [:@api_key]
+        super | [:@api_key, :@gems]
       end
 
     end # class:User

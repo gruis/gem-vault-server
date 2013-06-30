@@ -1,3 +1,4 @@
+# encoding: BINARY
 require "sinatra"
 require "sinatra/reloader"
 require "sinatra/json"
@@ -7,8 +8,10 @@ require "oj"
 require "json"
 
 require "gem-vault/server"
+require "gem-vault/server/error"
 require "gem-vault/server/user"
 require "gem-vault/server/gem-meta"
+require "gem-vault/server/indexer"
 require "gem-vault/ext/oj"
 
 module GemVault
@@ -23,6 +26,8 @@ module GemVault
       register Sinatra::Reloader
 
       set :root, Dir.pwd
+      set :gemroot, File.join(settings.root, "var")
+      set :indexer, Indexer.new(settings.gemroot)
       set :json_encoder, Oj
       helpers Sinatra::JSON
 
@@ -30,7 +35,7 @@ module GemVault
         config.serialize_into_session{|user| user.id }
         config.serialize_from_session{|id| User.get(id) }
         config.scope_defaults :default,
-          strategies: [:apikey, :password, :basic],
+          strategies: [:apikey, :apibasic, :password, :basic],
           action: 'unauthenticated'
         config.failure_app = self
       end
@@ -92,18 +97,41 @@ module GemVault
         end
 
         def unauthorized
-          [
-            401,
-            {
-              'Content-Type' => 'text/plain',
-              'Content-Length' => '0',
-              'WWW-Authenticate' => %(Basic realm="realm")
-            },
-            []
-            ]
+          [401, { 'Content-Type' => 'text/plain',
+                  'Content-Length' => '0',
+                  'WWW-Authenticate' => %(Basic realm="realm")
+          }, []]
         end
       end # Warden::Strategies.add(:basic)
 
+      Warden::Strategies.add(:apibasic) do
+        def auth
+          @auth ||= Rack::Auth::Basic::Request.new(env)
+        end
+
+        def valid?
+          auth.provided? && auth.basic? &&
+            auth.credentials && auth.credentials.first &&
+            auth.credentials.last.empty?
+        end
+
+        def authenticate!
+          (apikey = ApiKey.get(auth.credentials.first)) && (user = apikey.user) ?
+            success!(user) :
+            custom!(unauthorized)
+        end
+
+        def store?
+          false
+        end
+
+        def unauthorized
+          [401, { 'Content-Type' => 'text/plain',
+                  'Content-Length' => '0',
+                  'WWW-Authenticate' => %(Basic realm="realm")
+          }, []]
+        end
+      end # Warden::Strategies.add(:basic)
 
       def warden
         env['warden']
@@ -153,6 +181,13 @@ module GemVault
         end
       end
 
+      error GemExists do
+        status 409
+        msg = "Gem already exists: #{env['sinatra.error'].message}"
+        return json(:status => 409, :error => msg) if json?(ext)
+        msg
+      end
+
       get '/login' do
         erb :login
       end
@@ -178,15 +213,135 @@ module GemVault
         erb :index
       end
 
-      get '/index.*' do |ext|
+      get '/index?.?:ext?' do |ext|
         return json({}) if json?(ext)
         erb :index
       end
 
-      get '/protected' do
-        must_auth
-        erb :protected
+      def serve
+        send_file File.join(settings.gemroot, *request.path_info),
+          :type => response['Content-Type']
       end
+
+      %w[/specs.4.8.gz /latest_specs.4.8.gz /prerelease_specs.4.8.gz ].each do |index|
+        get index do
+          must_auth
+          content_type('application/x-gzip')
+          serve
+        end
+      end
+
+      %w[/quick/Marshal.4.8/*.gemspec.rz /yaml.Z /Marshal.4.8.Z ].each do |deflated_index|
+        get deflated_index do
+          must_auth
+          content_type('application/x-deflate')
+          serve
+        end
+      end
+
+      %w[/yaml /Marshal.4.8 /specs.4.8 /latest_specs.4.8 /prerelease_specs.4.8 ].each do |old_index|
+        get old_index do
+          must_auth
+          serve
+        end
+      end
+
+      get "/gems/*.gem" do
+        must_auth
+        serve
+      end
+
+      get "/reindex.?:ext?/?" do |ext|
+        must_auth
+        return 401 unless user.admin?
+        # TODO update the index in a delayed job
+        if settings.indexer.index
+          json?(ext) ? json(:status => :ok) : "Gem index updated"
+        else
+          json?(ext) ? json(:status => :failed) : "Gem index not updated"
+        end
+      end
+
+      def attrs_to_bool!(attrs, *keys)
+        keys.each do |key|
+          if attrs[key]
+            attrs[key] = ['true', 'yes', true].include?(attrs[key])
+          end
+        end
+        attrs
+      end
+      # User management
+
+      def create_user(id, attrs)
+        update_user(User.new(:uid => id), attrs)
+      end
+
+      def update_user(u, attrs)
+        attrs_to_bool!(attrs, 'admin')
+        attrs.each do |key, value|
+          u.send("#{key}=", value) if u.respond_to?("#{key}=")
+        end
+        u.save
+        u
+      end
+
+      def make_user_hash(u)
+        h = u.to_hash
+        unless u.id == user.id || user.admin?
+          h.delete('password')
+          h.delete('api_key')
+        end
+        h
+      end
+
+      get '/users.?:ext?/?' do |ext|
+        must_auth
+        users = Hash[User.map { |u| [u.id, u.email] }]
+        return json(users) if json?(ext)
+        users
+      end
+
+      get '/user.?:ext?/?' do |ext|
+        must_auth
+        json?(ext) ? json(make_user_hash(user)) : make_user_hash(user)
+      end
+
+      get '/user/:id.?:ext?/?' do |id, ext|
+        must_auth
+        return 404 unless (u = User.get(id))
+        json?(ext) ? json(make_user_hash(u)) : make_user_hash(u)
+      end
+
+      put '/user/:id.?:ext?/?' do |id, ext|
+        must_auth
+        if (u = User.get(id)).nil?
+          u = create_user(id, params)
+        else
+          return 401 unless u.id == user.id || user.admin?
+          params.delete('id')
+          update_user(u, params)
+        end
+        json?(ext) ? json(make_user_hash(u)) : make_user_hash(u)
+      end
+
+      post '/user.?:ext?/?' do |ext|
+        must_auth
+        return 409 unless user.admin?
+        return 400 unless params['id'] && params['email'] && params['password']
+        return 409 if (u = User.get(params['id']))
+        u = create_user(params.delete('id'), params)
+        link = url("/user/#{u.id}")
+        json?(ext) ? json(:link => link) : link
+      end
+
+      delete '/user/:id.?:ext?/?' do |id, ext|
+        must_auth
+        return 409 unless user.admin?
+        (u = User.get(params['id'])) && u.delete
+        json?(ext) ? json(:status => "ok") : "ok"
+      end
+
+      # RubyGems API
 
       get '/api/v1/gems/:name.:ext' do |name, ext|
         must_auth
@@ -262,13 +417,106 @@ module GemVault
       end
 
       # Retrieve your API key using HTTP basic auth.
-      get  '/api/v1/api_key.:ext' do |ext|
+      get  '/api/v1/api_key.?:ext?/?' do |ext|
         must_auth
-        data = {
-          'gemvault_api_key' => (user.api_key || user.gen_api_key.api_key).key
-        }
+        if !user.api_key
+          user.gen_api_key.save
+        end
+        data = { 'gemvault_api_key' => user.api_key.key }
         return json(data) if json?(ext)
         data
+      end
+
+      delete '/api/v1/api_key.?:ext?/?' do |ext|
+        must_auth
+        user.del_api_key
+        json?(ext) ? json(:status => :ok) : "Api key removed"
+      end
+
+      # Returns an array of gem version
+      get '/api/v1/versions/:name.:ext' do |name, ext|
+        must_auth
+        return 404 unless GemMeta.by_name(name)
+        results = Gem.each(name).reverse.map do |gem|
+          {
+            'authors'         => gem.authors.join(", "),
+            'built_at'        => gem.date.strftime("%Y-%m-%dT%H:%M:%SZ") ,
+            'description'     => gem.description,
+            # TODO track downloads of each verion
+            'downloads_count' => 0,
+            'number'          => gem.version.version,
+            'summary'         => gem.summary,
+            'platform'        => gem.platform,
+            'prerelease'      => !!gem.version.prerelease?,
+            'licenses'        => gem.license
+          }
+        end
+        return json(results) if json?(ext)
+        results
+      end
+
+      # Submit a gem. Must post a built RubyGem in the request body.
+      post '/api/v1/gems' do
+        must_auth
+        gem = Gem.open(request.body)
+        if (meta = GemMeta.by_name(gem.name))
+          return 401 if !meta.new? && !user.own?(meta)
+          begin
+            gem  = Gem.add(gem, request.body)
+          rescue Errno::EEXIST  => e
+            raise GemExists.new(e.message) unless meta.new?
+            $stderr.puts "#{e.message} already exists, but with no metadata"
+          end
+          meta.gem!
+
+        else
+          Gem.add(gem, request.body)
+          meta = GemMeta.new(:name => gem.name)
+        end
+
+        meta.add_owner(user).save
+        user.add_gem(meta).save
+
+        # TODO update the index in a delayed job
+        settings.indexer.index
+        # TODO build documentation for the gem
+
+        return json(:name => meta.name, :version => meta.version) if json?
+        "Successfully registered gem: #{meta.name} (#{gem.version})"
+      end
+
+      # Remove a gem from the index. Platform is optional.
+      # @example
+      #   $ curl -X DELETE -H 'Authorization:701243f217cdf23b1370c7b66b65ca97' \
+      #          -d 'gem_name=bills' -d 'version=0.0.1' \
+      #          -d 'platform=x86-darwin-10' \
+      #          https://rubygems.org/api/v1/gems/yank
+      delete '/api/v1/gems/yank' do
+        must_auth
+        return 404 if (meta = GemMeta.by_name(params['gem_name'])).nil?
+        return 401 unless user.own?(meta)
+        return 501 # TODO create a yank meta
+        return 404 if (gem = Gem.by_version(meta.nam, params['version'])).nil?
+        gem.yank
+        meta.gem!
+        meta.save
+        return json(:name => meta.name, :version => param['version']) if json?
+        "Successfully yanked gem: #{meta.name} (#{params['version']})"
+      end
+
+      # Update a previously yanked gem back into RubyGems.org’s index. Platform is optional.
+      # @example
+      #   $ curl -X PUT -H 'Authorization:701243f217cdf23b1370c7b66b65ca97' \
+      #          -d 'gem_name=bills' -d 'version=0.0.1' \
+      #          -d 'platform=x86-darwin-10' \
+      #          https://rubygems.org/api/v1/gems/unyank
+      put '/api/v1/gems/unyank' do
+        must_auth
+        return 404 if (meta = GemMeta.by_name(params['gem_name'])).nil?
+        return 401 unless user.own?(meta)
+        return 501 # TODO create a yank meta
+        return json(:name => meta.name, :version => param['version']) if json?
+        "Successfully unyanked gem: #{meta.name} (#{params['version']})"
       end
 
     end # class::Http < Sinatra::Base

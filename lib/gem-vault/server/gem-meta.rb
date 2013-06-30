@@ -35,6 +35,12 @@ module GemVault
           Gem.each(name).sort{|b,a| a.version <=> b.version}.first
       end
 
+      def gem!
+        @gem     = nil
+        @version = nil
+        gem
+      end
+
       def gem_path
         "/gems/#{name}-#{version}.gem"
       end
@@ -61,8 +67,8 @@ module GemVault
       end
 
       def add_owner(user)
-        owner_ids << user.id
-        owners << user
+        owner_ids << user.id unless owner_ids.include?(user.id)
+        owners << user unless owners.map(&:id).include?(user.id)
         self
       end
 

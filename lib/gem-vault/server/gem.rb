@@ -1,4 +1,5 @@
 require "stringio"
+require "fileutils"
 require "gem-vault/server"
 require "rubygems/package"
 
@@ -21,13 +22,38 @@ module GemVault
           map(&:name).uniq
         end
 
-        def add(raw_gem)
-          pkg      = ::Gem::Package.open(StringIO.new(raw_gem), "r") { |p| p.metadata }
-          filename = "#{pkg.name}-#{pkg.version}.gem"
-          path     = File.join(GemVault::Server.gemdir, filename)
-          File.exists?(path) && raise(Errno::EEXIST, filename).extend(Error)
-          File.open(path, "w") { |io| io.write(raw_gem) }
-          new(path).tap { |g| cache(g) }
+        # @param [String] name
+        # @param [String] version
+        def by_version(name, version)
+          each(name).find {|g| g.version.version == version }
+        end
+
+        # @param [IO, StringIO] io
+        def open(io)
+          pos = io.pos
+          ::Gem::Package::TarInput.open(StringIO.new(io.read)) do |p|
+            p.metadata
+          end
+        ensure
+          io.pos = pos
+        end
+
+        def add(pkg, io)
+          pos = io.pos
+          begin
+            filename = "#{pkg.name}-#{pkg.version}.gem"
+            path     = File.join(GemVault::Server.gemdir, filename)
+            File.exists?(path) && raise(Errno::EEXIST, filename).extend(Error)
+            begin
+              File.open(path, "w") { |gio| gio.write(io.read) }
+            rescue => e
+              FileUtils.rm(path)
+              raise
+            end
+            new(path).tap { |g| cache(g) }
+          ensure
+            io.pos = pos
+          end
         end
 
         def cache(gem)
@@ -64,6 +90,10 @@ module GemVault
         @path = path
       end
 
+      def yank
+        FileUtils.rm(@path)
+      end
+
       [:name,
        :version,
        :authors,
@@ -72,6 +102,8 @@ module GemVault
        :email,
        :project_uri,
        :homepage,
+       :license,
+       :date,
        :platform
       ].each do |key|
         define_method(key) do
@@ -96,17 +128,17 @@ module GemVault
       def spec
         @spec ||=  open { |pkg| pkg.metadata }
 
-      # https://github.com/rubygems/rubygems.org/blob/15b6dd6d5f/config/initializers/forbidden_yaml.rb
+      # https://github.com/rubygems/rubygems.org/blob/16b6dd6d5f/config/initializers/forbidden_yaml.rb
       # rescue Psych::WhitelistException => e
       #   # "Attempted YAML metadata exploit: #{e}"
       #   raise StandardError, "RubyGems.org cannot process this gem.\nThe metadata is invalid.\n#{e}"
-      rescue Gem::Package::FormatError
+      rescue ::Gem::Package::FormatError
         raise StandardError, "RubyGems.org cannot process this gem.\nPlease try rebuilding it" +
                " and installing it locally to make sure it's valid."
       rescue Exception => e
         raise StandardError, "RubyGems.org cannot process this gem.\nPlease try rebuilding it" +
                " and installing it locally to make sure it's valid.\n" +
-               "Error:\n#{e.message}}"
+               "Error:\n#{e.message} (#{e.class})"
       end
 
 

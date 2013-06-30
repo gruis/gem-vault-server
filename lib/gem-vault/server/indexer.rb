@@ -22,9 +22,10 @@ module GemVault
       # @option options [:build_modern] Generate indexes for RubyGems newer than 1.2.0
       # @option options [:update] Update modern indexes with gems added since the last update
       def index(options = {})
-        options = {:build_legacy => true, :build_modern => true}.merge(options)
-        indexer = indexer(options)
-        options[:update] ? indexer.update_index : indexer.generate_index
+        system("gem generate_index -d #{@path} > /dev/null")
+        # options = {:build_legacy => true, :build_modern => true}.merge(options)
+        # indexer = indexer(options)
+        # options[:update] ? indexer.update_index : indexer.generate_index
       end
 
       private

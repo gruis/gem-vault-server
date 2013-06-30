@@ -5,5 +5,6 @@ module GemVault
         include Error
       end
     end
+    class GemExists < StandardError; end
   end # module::Server
 end # module::GemVault

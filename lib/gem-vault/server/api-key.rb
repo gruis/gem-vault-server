@@ -40,4 +40,3 @@ module GemVault
 end # module::GemVault
 
 require "gem-vault/server/user"
-
